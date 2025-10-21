@@ -1,12 +1,279 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Archers vs Knights</title>
-  <link rel="stylesheet" href="style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Archers vs Knights</title>
+<style>
+html, body { margin:0; padding:0; overflow:hidden; background:#000; font-family:sans-serif; }
+#ui {
+  position:absolute; bottom:10px; left:50%; transform:translateX(-50%);
+  display:flex; gap:20px; background:rgba(0,0,0,0.6); padding:12px 24px;
+  border-radius:12px; color:white;
+}
+#ui button { background:#555; color:white; border:none; padding:8px 16px; border-radius:8px; cursor:pointer; }
+#menu {
+  position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+  display:flex; flex-direction:column; gap:20px; background:rgba(0,0,0,0.8);
+  padding:30px; border-radius:20px; color:white; align-items:center;
+}
+#menu button { padding:10px 20px; font-size:18px; }
+#waveControls {
+  position:absolute; top:10px; left:50%; transform:translateX(-50%);
+  display:flex; align-items:center; gap:10px; color:white;
+}
+#waveControls label { cursor:pointer; color:white; }
+</style>
 </head>
 <body>
-  <canvas id="gameCanvas" width="900" height="500"></canvas>
-  <script type="module" src="./src/main.js"></script>
+
+<canvas id="gameCanvas"></canvas>
+
+<div id="menu">
+  <h1>Archers vs Knights</h1>
+  <div>Gems: <span id="gems">0</span></div>
+  <button id="startBtn">Start Game</button>
+</div>
+
+<div id="ui" style="display:none;">
+  <span id="money">Money: $100</span>
+  <button id="buyArcher">Buy Archer ($50)</button>
+  <button id="buyMiner">Buy Miner ($50)</button>
+</div>
+
+<div id="waveControls" style="display:none;">
+  <button id="nextWaveBtn">Start Next Wave</button>
+  <input type="checkbox" id="autoSkip" /> <label for="autoSkip">Auto Skip</label>
+  <button id="skipBtn">Skip Wave</button>
+  <span id="waveInfo">Wave: 0</span>
+</div>
+
+<script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+
+// Game variables
+let money = parseInt(localStorage.getItem("money")) || 100;
+let gems = parseInt(localStorage.getItem("gems")) || 0;
+let waveNumber = parseInt(localStorage.getItem("waveNumber")) || 0;
+let selectedUnit = null;
+const tileSize = 80;
+let cols, rows;
+const castleRows = 3;
+let placements = [];
+let knights = [];
+let projectiles = [];
+let gameRunning = false;
+let autoSkip = false;
+let currentWaveKnights = 0;
+
+// Resize canvas
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  cols = Math.floor(canvas.width/tileSize);
+  rows = Math.floor(canvas.height/tileSize);
+}
+window.addEventListener("resize", resize);
+resize();
+
+// UI buttons
+const ui = document.getElementById("ui");
+document.getElementById("buyArcher").onclick = () => selectedUnit="archer";
+document.getElementById("buyMiner").onclick = () => selectedUnit="miner";
+const menu = document.getElementById("menu");
+const gemsSpan = document.getElementById("gems");
+const waveInfo = document.getElementById("waveInfo");
+
+// Wave controls
+const waveControls = document.getElementById("waveControls");
+const nextWaveBtn = document.getElementById("nextWaveBtn");
+const skipBtn = document.getElementById("skipBtn");
+const autoSkipCheckbox = document.getElementById("autoSkip");
+
+nextWaveBtn.onclick = () => startWave();
+skipBtn.onclick = () => endWave();
+autoSkipCheckbox.onchange = ()=> autoSkip = autoSkipCheckbox.checked;
+
+// Place units
+canvas.addEventListener("click", e=>{
+  if(!gameRunning) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const col = Math.floor(x/tileSize);
+  const row = Math.floor(y/tileSize);
+
+  if(!selectedUnit || money < 50) return;
+
+  if(selectedUnit==="miner" && row < rows - castleRows) return; // Miners only on castle
+  if(selectedUnit==="archer" && (row===0 || row >= rows - castleRows)) return; // Archers only on grass
+
+  placements.push({col,row,type:selectedUnit,lastMine:Date.now()});
+  money -= 50;
+  selectedUnit=null;
+  saveGame();
+});
+
+// Draw function
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      if(r===0) ctx.fillStyle="#7a4a2b"; // mud
+      else if(r >= rows - castleRows) ctx.fillStyle="#888"; // castle
+      else ctx.fillStyle="#2fb84f"; // grass
+      ctx.fillRect(c*tileSize,r*tileSize,tileSize-1,tileSize-1);
+    }
+  }
+
+  placements.forEach(p=>{
+    ctx.fillStyle = p.type==="archer"?"blue":"yellow";
+    ctx.fillRect(p.col*tileSize+10,p.row*tileSize+10,tileSize-20,tileSize-20);
+  });
+
+  knights.forEach(k=>{
+    ctx.fillStyle="red";
+    ctx.fillRect(k.col*tileSize+10,k.row*tileSize+10,tileSize-20,tileSize-20);
+  });
+
+  projectiles.forEach(p=>{
+    ctx.fillStyle="cyan";
+    ctx.fillRect(p.x-3,p.y-3,6,6);
+  });
+}
+
+// Waves
+function startWave(){
+  waveNumber++;
+  currentWaveKnights = 10 + waveNumber*2;
+  spawnWaveKnights(currentWaveKnights);
+  waveInfo.textContent = "Wave: "+waveNumber;
+  saveGame();
+}
+
+function spawnWaveKnights(number){
+  for(let i=0;i<number;i++){
+    setTimeout(()=>{
+      const spawnCol = Math.floor(Math.random()*cols);
+      knights.push({col:spawnCol,row:1});
+    }, i*500);
+  }
+}
+
+function endWave(){
+  currentWaveKnights = 0;
+  gems += 5 + waveNumber*2;
+  saveGame();
+}
+
+function checkAutoSkip(){
+  if(autoSkip && currentWaveKnights <=0) startWave();
+}
+
+// Update game logic
+function update(){
+  const now = Date.now();
+
+  knights.forEach(k=>{ k.row += 0.0015; });
+
+  placements.forEach(p=>{
+    if(p.type==="miner" && now - p.lastMine >= 3000){
+      money += 10;
+      p.lastMine = now;
+    }
+  });
+
+  placements.forEach(a=>{
+    if(a.type!=="archer") return;
+    const ax = a.col*tileSize+tileSize/2;
+    const ay = a.row*tileSize+tileSize/2;
+    let nearest = null;
+    let nearestDist = 200;
+    knights.forEach(k=>{
+      const kx = k.col*tileSize+tileSize/2;
+      const ky = k.row*tileSize+tileSize/2;
+      const dist = Math.hypot(kx-ax,ky-ay);
+      if(dist<nearestDist){ nearest=k; nearestDist=dist; }
+    });
+    if(nearest){
+      projectiles.push({x:ax,y:ay,target:nearest,speed:4});
+    }
+  });
+
+  for(let i=projectiles.length-1;i>=0;i--){
+    const p = projectiles[i];
+    const t = p.target;
+    const tx = t.col*tileSize+tileSize/2;
+    const ty = t.row*tileSize+tileSize/2;
+    const dx = tx-p.x;
+    const dy = ty-p.y;
+    const dist = Math.hypot(dx,dy);
+    if(dist<4){
+      const index = knights.indexOf(t);
+      if(index>-1){
+        knights.splice(index,1);
+        currentWaveKnights--;
+      }
+      projectiles.splice(i,1);
+    } else {
+      p.x += dx/dist*p.speed;
+      p.y += dy/dist*p.speed;
+    }
+  }
+
+  knights.forEach(k=>{
+    if(k.row >= rows - castleRows){
+      endGame();
+    }
+  });
+
+  checkAutoSkip();
+}
+
+// Loop
+function loop(){
+  if(gameRunning){
+    update();
+    draw();
+    document.getElementById("money").textContent="Money: $"+money;
+    gemsSpan.textContent = gems;
+  }
+  requestAnimationFrame(loop);
+}
+
+// Game functions
+function startGame(){
+  money = parseInt(localStorage.getItem("money")) || 100;
+  placements = [];
+  knights = [];
+  projectiles = [];
+  gameRunning = true;
+  menu.style.display="none";
+  ui.style.display="flex";
+  waveControls.style.display="flex";
+  waveInfo.textContent = "Wave: "+waveNumber;
+}
+
+function endGame(){
+  gameRunning=false;
+  alert("Game Over!");
+  menu.style.display="flex";
+  ui.style.display="none";
+  waveControls.style.display="none";
+  saveGame();
+}
+
+function saveGame(){
+  localStorage.setItem("money", money);
+  localStorage.setItem("gems", gems);
+  localStorage.setItem("waveNumber", waveNumber);
+}
+
+document.getElementById("startBtn").onclick = ()=> startGame();
+loop();
+</script>
+
 </body>
 </html>
